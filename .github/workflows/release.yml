@@ -84,7 +84,7 @@ jobs:
           REPO=${{ github.repository }}
           MINIMUM_VERSION="4.1.7"
           wait_for_release_id "$REPO" "$TAG" 12 2 >/dev/null
-          for YML_FILE in latest-mac.yml latest-arm64-mac.yml; do
+          for YML_FILE in latest-mac.yml; do
             if ! retry_cmd 5 3 gh release download "$TAG" --repo "$REPO" --pattern "$YML_FILE" --output "/tmp/$YML_FILE"; then
               echo "Skip $YML_FILE because download failed after retries."
               continue

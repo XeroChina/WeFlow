@@ -34,6 +34,7 @@
 - **原生库更新**：内置社区维护的 `wcdb_api.dll`，兼容新版微信数据库
 
 上游项目：https://github.com/hicccc77/WeFlow
+社区补丁：https://github.com/AnonymousUser443/WeFlow-Community-Patch
 
 
 ## 主要功能
