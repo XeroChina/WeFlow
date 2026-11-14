@@ -8,8 +8,14 @@ permissions:
   contents: read
 
 jobs:
-  probe:
-    runs-on: macos-13
+  macos15:
+    runs-on: macos-15
+    steps:
+      - name: ok
+        run: echo "runner ok $RUNNER_NAME"
+
+  macoslatest:
+    runs-on: macos-latest
     steps:
       - name: ok
         run: echo "runner ok $RUNNER_NAME"
