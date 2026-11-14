@@ -51,6 +51,7 @@ Thumbs.db
 # Electron dev cache
 .electron/
 .cache/
+.npm-cache-local/
 
 
 

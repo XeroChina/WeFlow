@@ -179,7 +179,15 @@ const BUILTIN_OFFICIAL_HELPER_USERNAMES = new Set([
   'gh_f0a92aa7146c' // 微信收款助手不出现在通讯录的公众号/服务号分组里
 ])
 const CONTACT_CLASSIFICATION_CACHE_VERSION = 'contact-classification-v5'
-
+// 补充公众号会话时只需要公众号（gh_*）、微信内置账号（weixin*）与企业 openim 账号，
+// 定向查询可避免把整张联系人表（数万行）拉进内存
+const OFFICIAL_CONTACT_SELECT_SQL =
+  "SELECT * FROM contact WHERE username LIKE 'gh_%' OR username LIKE 'weixin%' OR username LIKE '%@openim%'"
+// 公众号未读统计的兜底全量重扫间隔：会话表时间戳长期不变时也定期重扫一次
+const SYNTHETIC_FULL_RESCAN_INTERVAL_MS = 10 * 60 * 1000
+// 公众号未读统计每处理多少个公众号让出一次，避免独占原生数据库工作线程
+const SYNTHETIC_SCAN_BATCH_SIZE = 20
+const SYNTHETIC_SCAN_BATCH_PAUSE_MS = 40
 interface GetContactsOptions {
   lite?: boolean
 }
@@ -256,6 +264,10 @@ interface SyntheticUnreadState {
   summaryTimestamp?: number
   summary?: string
   lastMsgType?: number
+  // 会话表中该公众号的最后消息时间，用于判断是否有新消息
+  rowTimestamp?: number
+  // 上次实际扫描时间，用于兜底全量重扫
+  scannedAt?: number
 }
 
 interface MyFootprintSummary {
@@ -358,7 +370,7 @@ const FRIEND_EXCLUDE_USERNAMES = new Set(['medianote', 'floatbottle', 'qmessage'
 
 class ChatService {
   private configService: ConfigService
-  private runtimeConfig?: { dbPath?: string; decryptKey?: string; myWxid?: string }
+  private runtimeConfig?: { dbPath?: string; decryptKey?: string; myWxid?: string; accountDir?: string }
   private connected = false
   private readonly dbMonitorListeners = new Set<(type: string, json: string) => void>()
   private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number; startTime?: number; endTime?: number; ascending?: boolean; bufferedMessages?: any[] }> = new Map()
@@ -410,6 +422,15 @@ class ChatService {
   private sessionMessageCountCache = new Map<string, { count: number; updatedAt: number }>()
   private sessionMessageCountHintCache = new Map<string, number>()
   private syntheticUnreadState = new Map<string, SyntheticUnreadState>()
+  // 公众号消息表统计快照：避免每次会话列表刷新都逐个查询上千个公众号的原生消息表
+  private syntheticSnapshotCache = new Map<string, { total: number; latestTimestamp: number; updatedAt: number }>()
+  private readonly syntheticSnapshotCacheTtlMs = 60 * 1000
+  private syntheticUnreadRefreshRunning = false
+  // 公众号/微信内置账号的联系人行缓存：只取需要的行，避免每次拉取整张联系人表
+  private officialContactCache: { rows: Record<string, any>[]; updatedAt: number } | null = null
+  private readonly officialContactCacheTtlMs = 5 * 60 * 1000
+  private contactLocalTypeCache = new Map<string, { localType: number; updatedAt: number }>()
+  private readonly contactLocalTypeCacheTtlMs = 10 * 60 * 1000
   private sessionMessageCountBatchCache: {
     dbSignature: string
     sessionIdsKey: string
@@ -471,7 +492,7 @@ class ChatService {
     this.voiceTranscriptCache = new LRUCache(1000) // 最多缓存1000条转写记录
   }
 
-  setRuntimeConfig(config: { dbPath?: string; decryptKey?: string; myWxid?: string; resourcesPath?: string; appPath?: string; isPackaged?: boolean }): void {
+  setRuntimeConfig(config: { dbPath?: string; decryptKey?: string; myWxid?: string; accountDir?: string; resourcesPath?: string; appPath?: string; isPackaged?: boolean }): void {
     this.runtimeConfig = config
   }
 
@@ -603,7 +624,8 @@ class ChatService {
       }
 
       // 使用 ConfigService 统一解析账号目录
-      const accountDir = this.configService.getAccountDir(dbPath, wxid)
+      const configuredAccountDir = String(this.runtimeConfig?.accountDir || '').trim()
+      const accountDir = configuredAccountDir || this.configService.getAccountDir(dbPath, wxid)
       if (!accountDir) {
         return { success: false, error: '未找到账号目录，请检查数据库路径和微信ID配置' }
       }
@@ -877,6 +899,41 @@ class ChatService {
         return { success: false, error: `会话表异常: ${detail}${tableInfo}${tables}${columns}` }
       }
 
+      // 公众号在会话表中的最后消息时间：只有真实存在于会话表的公众号才可能有消息，
+      // 其余公众号统计结果恒为 0，无需逐个查询原生消息表
+      const officialRowTimestamps = new Map<string, number>()
+      for (const row of rows) {
+        const rawUsername = String(
+          row.username ||
+          row.user_name ||
+          row.userName ||
+          row.usrName ||
+          row.UsrName ||
+          row.talker ||
+          row.talker_id ||
+          row.talkerId ||
+          ''
+        ).trim()
+        if (!rawUsername.startsWith('gh_')) continue
+        const rowSortTs = parseInt(
+          row.sort_timestamp || row.sortTimestamp || row.sort_time || row.sortTime || '0',
+          10
+        )
+        const rowLastTs = parseInt(
+          row.last_timestamp ||
+          row.lastTimestamp ||
+          row.last_msg_time ||
+          row.lastMsgTime ||
+          String(rowSortTs),
+          10
+        )
+        const rowTs = Number.isFinite(rowLastTs) ? rowLastTs : 0
+        const prevTs = officialRowTimestamps.get(rawUsername)
+        if (prevTs === undefined || rowTs > prevTs) {
+          officialRowTimestamps.set(rawUsername, rowTs)
+        }
+      }
+
       const openimLocalTypeMap = await this.loadContactLocalTypeMapForEnterpriseOpenim(rows.map((row) =>
         String(
           row.username ||
@@ -1000,7 +1057,10 @@ class ChatService {
       }
 
       await this.addMissingOfficialSessions(sessions, myWxid)
-      await this.applySyntheticUnreadCounts(sessions)
+      // 公众号未读统计每个公众号都要查一次原生消息表（账号多时可达上千个），
+      // 同步等待会让会话列表首屏阻塞数秒。这里先用缓存态即时渲染，再在后台刷新。
+      this.applyCachedSyntheticUnread(sessions)
+      this.scheduleSyntheticUnreadRefresh(sessions, officialRowTimestamps)
       sessions.sort((a, b) => Number(b.sortTimestamp || b.lastTimestamp || 0) - Number(a.sortTimestamp || a.lastTimestamp || 0))
 
       // 不等待联系人信息加载，直接返回基础会话列表
@@ -1216,13 +1276,39 @@ class ChatService {
     return { validIds, invalidRows }
   }
 
+  /**
+   * 补充公众号会话。
+   * 只查询公众号/微信内置账号这几类联系人行，不再拉取整张联系人表
+   * （联系人表可达数万行，全量拉取会让每次会话列表刷新多花近一秒）。
+   */
+  private async loadOfficialContactRows(): Promise<Record<string, any>[]> {
+    const cached = this.officialContactCache
+    if (cached && Date.now() - cached.updatedAt < this.officialContactCacheTtlMs) {
+      return cached.rows
+    }
+    try {
+      const result = await wcdbService.execQuery('contact', null, OFFICIAL_CONTACT_SELECT_SQL)
+      if (result.success && Array.isArray(result.rows)) {
+        const rows = result.rows as Record<string, any>[]
+        this.officialContactCache = { rows, updatedAt: Date.now() }
+        return rows
+      }
+    } catch (error) {
+      console.warn('[ChatService] 查询公众号联系人失败，回退到全量联系人:', error)
+    }
+    // 回退：老路径仍是全量联系人表，仅在定向查询不可用时使用
+    const fallback = await wcdbService.getContactsCompact()
+    if (!fallback.success || !Array.isArray(fallback.contacts)) return []
+    const rows = fallback.contacts as Record<string, any>[]
+    this.officialContactCache = { rows, updatedAt: Date.now() }
+    return rows
+  }
+
   private async addMissingOfficialSessions(sessions: ChatSession[], myWxid?: string): Promise<void> {
     const existing = new Set(sessions.map((session) => String(session.username || '').trim()).filter(Boolean))
     try {
-      const contactResult = await wcdbService.getContactsCompact()
-      if (!contactResult.success || !Array.isArray(contactResult.contacts)) return
-
-      for (const row of contactResult.contacts as Record<string, any>[]) {
+      const contactRows = await this.loadOfficialContactRows()
+      for (const row of contactRows) {
         const username = String(row.username || '').trim()
         if (!username || existing.has(username)) continue
         const lowered = username.toLowerCase()
@@ -1256,7 +1342,11 @@ class ChatService {
     return normalized.startsWith('gh_')
   }
 
-  private async getSessionMessageStatsSnapshot(sessionId: string): Promise<{ total: number; latestTimestamp: number }> {
+  private async getSessionMessageStatsSnapshot(sessionId: string, forceRefresh = false): Promise<{ total: number; latestTimestamp: number }> {
+    const cached = this.syntheticSnapshotCache.get(sessionId)
+    if (!forceRefresh && cached && Date.now() - cached.updatedAt < this.syntheticSnapshotCacheTtlMs) {
+      return { total: cached.total, latestTimestamp: cached.latestTimestamp }
+    }
     const tableStatsResult = await wcdbService.getMessageTableStats(sessionId)
     if (!tableStatsResult.success || !Array.isArray(tableStatsResult.tables)) {
       return { total: 0, latestTimestamp: 0 }
@@ -1284,16 +1374,109 @@ class ChatService {
       }
     }
 
+    this.syntheticSnapshotCache.set(sessionId, { total, latestTimestamp, updatedAt: Date.now() })
     return { total, latestTimestamp }
   }
 
-  private async applySyntheticUnreadCounts(sessions: ChatSession[]): Promise<void> {
+  /**
+   * 用已缓存的公众号未读状态即时渲染会话列表（纯内存，无数据库访问）
+   */
+  private applyCachedSyntheticUnread(sessions: ChatSession[]): void {
+    for (const session of sessions) {
+      if (!this.shouldUseSyntheticUnread(session.username)) continue
+      const state = this.syntheticUnreadState.get(session.username)
+      if (!state) continue
+      if (state.latestTimestamp > 0) {
+        session.lastTimestamp = Math.max(Number(session.lastTimestamp || 0), state.latestTimestamp)
+        session.sortTimestamp = Math.max(Number(session.sortTimestamp || 0), state.latestTimestamp)
+      }
+      if (state.summary) {
+        session.summary = state.summary
+        session.lastMsgType = Number(state.lastMsgType || session.lastMsgType || 0)
+      }
+      session.unreadCount = Math.max(Number(session.unreadCount || 0), state.unreadCount)
+    }
+  }
+
+  /**
+   * 后台刷新公众号未读统计。
+   * 公众号数量多时逐个查询原生消息表需要数秒，放在后台执行，完成后广播给渲染进程刷新列表。
+   */
+  private scheduleSyntheticUnreadRefresh(
+    sessions: ChatSession[],
+    officialRowTimestamps?: Map<string, number>
+  ): void {
+    if (this.syntheticUnreadRefreshRunning) return
+    const candidates = sessions.filter((session) => {
+      if (!this.shouldUseSyntheticUnread(session.username)) return false
+      // 只统计会话表里真实存在的公众号：其余公众号没有任何消息，统计结果恒为 0
+      if (officialRowTimestamps && !officialRowTimestamps.has(session.username)) return false
+      return true
+    })
+    if (candidates.length === 0) return
+
+    this.syntheticUnreadRefreshRunning = true
+    void this.applySyntheticUnreadCounts(candidates, officialRowTimestamps)
+      .catch((error) => {
+        console.warn('[ChatService] 公众号未读后台刷新失败:', error)
+      })
+      .finally(() => {
+        this.syntheticUnreadRefreshRunning = false
+        this.broadcastSyntheticUnreadUpdates(candidates)
+      })
+  }
+
+  private broadcastSyntheticUnreadUpdates(sessions: ChatSession[]): void {
+    if (sessions.length === 0) return
+    const payload = sessions.map((session) => ({
+      username: session.username,
+      unreadCount: session.unreadCount,
+      summary: session.summary,
+      lastMsgType: session.lastMsgType,
+      sortTimestamp: session.sortTimestamp,
+      lastTimestamp: session.lastTimestamp,
+      messageCountHint: session.messageCountHint
+    }))
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      win.webContents.send('chat:syntheticUnreadUpdated', payload)
+    }
+  }
+
+  private async applySyntheticUnreadCounts(
+    sessions: ChatSession[],
+    officialRowTimestamps?: Map<string, number>
+  ): Promise<void> {
     const candidates = sessions.filter((session) => this.shouldUseSyntheticUnread(session.username))
     if (candidates.length === 0) return
 
+    const now = Date.now()
+    let scanned = 0
     for (const session of candidates) {
       try {
-        const snapshot = await this.getSessionMessageStatsSnapshot(session.username)
+        const rowTimestamp = officialRowTimestamps?.get(session.username)
+        const existingState = this.syntheticUnreadState.get(session.username)
+        // 会话表里的公众号最后消息时间没变，说明没有新消息，无需再查原生消息表
+        if (
+          existingState &&
+          rowTimestamp !== undefined &&
+          existingState.rowTimestamp === rowTimestamp &&
+          existingState.scannedAt !== undefined &&
+          now - existingState.scannedAt < SYNTHETIC_FULL_RESCAN_INTERVAL_MS
+        ) {
+          continue
+        }
+
+        const rowChanged =
+          existingState !== undefined &&
+          rowTimestamp !== undefined &&
+          existingState.rowTimestamp !== rowTimestamp
+        const snapshot = await this.getSessionMessageStatsSnapshot(session.username, rowChanged)
+        scanned += 1
+        // 原生数据库只有一个工作线程，批量统计时分批让出，避免拖慢其它查询
+        if (scanned % SYNTHETIC_SCAN_BATCH_SIZE === 0) {
+          await new Promise((resolve) => setTimeout(resolve, SYNTHETIC_SCAN_BATCH_PAUSE_MS))
+        }
         const latestTimestamp = Math.max(
           Number(session.lastTimestamp || 0),
           Number(session.sortTimestamp || 0),
@@ -1353,6 +1536,8 @@ class ChatService {
         }
 
         state.latestTimestamp = Math.max(state.latestTimestamp, latestTimestamp)
+        state.rowTimestamp = rowTimestamp
+        state.scannedAt = Date.now()
         if (latestMessageForSummary) {
           const summary = this.getSessionSummaryFromMessage(latestMessageForSummary)
           if (summary) {
@@ -7735,8 +7920,21 @@ class ChatService {
     if (normalizedUsernames.length === 0) {
       return localTypeMap
     }
+    // 命中缓存的账号不再重复查库，避免每次会话列表刷新都发起一次联系人查询
+    const missingUsernames: string[] = []
+    for (const username of normalizedUsernames) {
+      const cached = this.contactLocalTypeCache.get(username)
+      if (cached && Date.now() - cached.updatedAt < this.contactLocalTypeCacheTtlMs) {
+        localTypeMap.set(username, cached.localType)
+      } else {
+        missingUsernames.push(username)
+      }
+    }
+    if (missingUsernames.length === 0) {
+      return localTypeMap
+    }
     try {
-      const contactResult = await wcdbService.getContactsCompact(normalizedUsernames)
+      const contactResult = await wcdbService.getContactsCompact(missingUsernames)
       if (!contactResult.success || !Array.isArray(contactResult.contacts)) {
         return localTypeMap
       }
@@ -7745,7 +7943,9 @@ class ChatService {
         if (!username) continue
         const localType = this.getRowInt(row, ['local_type', 'localType', 'WCDB_CT_local_type'], Number.NaN)
         if (!Number.isFinite(localType)) continue
-        localTypeMap.set(username, Math.floor(localType))
+        const value = Math.floor(localType)
+        localTypeMap.set(username, value)
+        this.contactLocalTypeCache.set(username, { localType: value, updatedAt: Date.now() })
       }
     } catch {
       return localTypeMap

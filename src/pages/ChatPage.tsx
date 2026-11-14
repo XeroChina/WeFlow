@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useShallow } from 'zustand/react/shallow'
 import { useChatStore } from '../stores/chatStore'
+import { useExportTaskStore } from '../stores/exportTaskStore'
 import { useBatchTranscribeStore, type BatchVoiceTaskType } from '../stores/batchTranscribeStore'
 import { useBatchImageDecryptStore } from '../stores/batchImageDecryptStore'
 import type { ChatRecordItem, ChatSession, Message } from '../types/models'
@@ -26,7 +27,6 @@ import {
   updateBackgroundTask
 } from '../services/backgroundTaskMonitor'
 import {
-  emitOpenSingleExport,
   onExportSessionStatus,
   onSingleExportDialogStatus,
   requestExportSessionStatus
@@ -3575,6 +3575,53 @@ function ChatPage(props: ChatPageProps) {
     }
   }, [setSessions])
 
+  // 主进程后台刷新公众号未读统计完成后广播到渲染进程，这里合并回会话列表
+  useEffect(() => {
+    const subscribe = window.electronAPI?.chat?.onSyntheticUnreadUpdated
+    if (!subscribe) return
+    return subscribe((payload) => {
+      if (!Array.isArray(payload) || payload.length === 0) return
+      const updateMap = new Map(payload.map((item) => [String(item.username || ''), item]))
+      const current = sessionsRef.current || []
+      if (current.length === 0) return
+
+      let hasChanges = false
+      const updatedSessions = current
+        .map((session) => {
+          const update = updateMap.get(session.username)
+          if (!update) return session
+          const nextUnreadCount = Number(update.unreadCount || 0)
+          const nextSummary = update.summary || session.summary
+          const nextSortTimestamp = Math.max(Number(session.sortTimestamp || 0), Number(update.sortTimestamp || 0))
+          const nextLastTimestamp = Math.max(Number(session.lastTimestamp || 0), Number(update.lastTimestamp || 0))
+          if (
+            nextUnreadCount === session.unreadCount &&
+            nextSummary === session.summary &&
+            nextSortTimestamp === session.sortTimestamp &&
+            nextLastTimestamp === session.lastTimestamp
+          ) {
+            return session
+          }
+          hasChanges = true
+          return {
+            ...session,
+            unreadCount: nextUnreadCount,
+            summary: nextSummary,
+            lastMsgType: Number(update.lastMsgType || session.lastMsgType || 0),
+            sortTimestamp: nextSortTimestamp,
+            lastTimestamp: nextLastTimestamp,
+            messageCountHint: update.messageCountHint ?? session.messageCountHint
+          }
+        })
+        .sort((a, b) => Number(b.sortTimestamp || b.lastTimestamp || 0) - Number(a.sortTimestamp || a.lastTimestamp || 0))
+
+      if (!hasChanges) return
+      setSessions(updatedSessions)
+      sessionsRef.current = updatedSessions
+      void resolveChatCacheScope().then((scope) => persistSessionListCache(scope, updatedSessions))
+    })
+  }, [setSessions, persistSessionListCache, resolveChatCacheScope])
+
   // 加载会话列表（优化：先返回基础数据，异步加载联系人信息）
   const loadSessions = async (options?: { silent?: boolean }) => {
     if (options?.silent) {
@@ -6696,8 +6743,8 @@ function ChatPage(props: ChatPageProps) {
     if (!currentSessionId) return
     if (inProgressExportSessionIds.has(currentSessionId) || isPreparingExportDialog) return
 
-    const requestId = `chat-export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const sessionName = displayNameOrFallback(currentSessionId, currentSession?.displayName, currentSession?.username)
+    const requestId = useExportTaskStore.getState().requestSingleExport(currentSessionId, sessionName)
     pendingExportRequestIdRef.current = requestId
     setIsPreparingExportDialog(true)
     setExportPrepareHint('')
@@ -6705,11 +6752,6 @@ function ChatPage(props: ChatPageProps) {
       window.clearTimeout(exportPrepareLongWaitTimerRef.current)
       exportPrepareLongWaitTimerRef.current = null
     }
-    emitOpenSingleExport({
-      sessionId: currentSessionId,
-      sessionName,
-      requestId
-    })
   }, [currentSession, currentSessionId, inProgressExportSessionIds, isPreparingExportDialog])
 
   const handleTriggerSessionInsight = useCallback(async () => {

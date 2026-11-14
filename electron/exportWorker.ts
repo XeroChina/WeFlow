@@ -17,6 +17,8 @@ interface ExportWorkerConfig {
   imageXorKey?: unknown
   imageAesKey?: string
   resourcesPath?: string
+  electronResourcesPath?: string
+  appPath?: string
   userDataPath?: string
   cachePath?: string
   emojiCacheDir?: string
@@ -27,6 +29,20 @@ interface ExportWorkerConfig {
 }
 
 const config = workerData as ExportWorkerConfig
+
+const resolveElectronRuntimePaths = (): { resourcesPath: string; appPath: string } => {
+  const path = require('path') as typeof import('path')
+  const legacyResourcesRoot = config.resourcesPath
+    ? path.dirname(config.resourcesPath)
+    : __dirname
+  const resourcesPath = String(config.electronResourcesPath || legacyResourcesRoot)
+  const appPath = String(
+    config.appPath ||
+    (config.isPackaged ? path.join(resourcesPath, 'app.asar') : legacyResourcesRoot)
+  )
+  return { resourcesPath, appPath }
+}
+
 const controlState = {
   pauseRequested: false,
   stopRequested: false
@@ -145,8 +161,8 @@ if (config.userDataPath) {
 }
 process.env.WEFLOW_PROJECT_NAME = process.env.WEFLOW_PROJECT_NAME || 'WeFlow'
 
-// 消息导出强制走 WeLive 引擎（不提供 legacy 回退开关）；
-// 仅联系人导出仍由 worker 内置流程处理。
+// 消息导出优先走 WeLive 引擎；引擎过期、握手不兼容或原生崩溃时，
+// 自动回退到 worker 内置的 WCDB 兼容导出流程。
 const shouldUseWeliveEngine = () => config.mode !== 'contacts'
 
 const normalizeImageXorKey = (value: unknown): string | number | undefined => {
@@ -253,10 +269,25 @@ const collectWeliveErrorText = (result: any): string => {
     .join('\n')
 }
 
-const isWeliveNativeCrashResult = (result: any): boolean => {
-  if (!result || result.success) return false
+type WeliveFallbackReason = 'build-expired' | 'native-transport' | 'native-crash' | 'engine-missing'
+
+const getWeliveFallbackReason = (result: any): WeliveFallbackReason | null => {
+  if (!result || result.success) return null
   const text = collectWeliveErrorText(result)
-  return /3221225477|0x?c0000005|-1073741819/i.test(text)
+  if (/this build has expired/i.test(text)) return 'build-expired'
+  if (/native transport challenge failed|server proof mismatch|finish failed with status|finish proof mismatch/i.test(text)) {
+    return 'native-transport'
+  }
+  if (/3221225477|0x?c0000005|-1073741819/i.test(text)) return 'native-crash'
+  if (/未找到 WeLive 导出引擎|\bENOENT\b/i.test(text)) return 'engine-missing'
+  return null
+}
+
+const getWeliveFallbackLabel = (reason: WeliveFallbackReason): string => {
+  if (reason === 'build-expired') return 'WeLive 导出引擎已过期，正在切换兼容导出引擎'
+  if (reason === 'native-transport') return 'WeLive 导出引擎与当前环境不兼容，正在切换兼容导出引擎'
+  if (reason === 'engine-missing') return '未找到 WeLive 导出引擎，正在切换兼容导出引擎'
+  return 'WeLive 导出引擎异常退出，正在切换兼容导出引擎'
 }
 
 async function runWeliveEngine() {
@@ -275,6 +306,7 @@ async function runWeliveEngine() {
     : (Array.isArray(config.sessionIds) ? config.sessionIds : []).map((id) => String(id || '').trim()).filter(Boolean)
   const outputDir = String(config.outputDir || (config.outputPath ? path.dirname(config.outputPath) : '') || '').trim()
   const rawRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'weflow-welive-raw-'))
+  const electronRuntimePaths = resolveElectronRuntimePaths()
 
   exportService.setRuntimeConfig({
     dbPath: config.dbPath,
@@ -283,8 +315,8 @@ async function runWeliveEngine() {
     accountDir: config.accountDir,
     imageXorKey: config.imageXorKey,
     imageAesKey: config.imageAesKey,
-    resourcesPath: config.resourcesPath,
-    appPath: config.resourcesPath ? path.dirname(config.resourcesPath) : __dirname,
+    resourcesPath: electronRuntimePaths.resourcesPath,
+    appPath: electronRuntimePaths.appPath,
     isPackaged: config.isPackaged
   })
   wcdbService.setPaths(String(config.resourcesPath || ''), String(config.userDataPath || ''))
@@ -408,8 +440,17 @@ async function runWeliveEngine() {
     })
 
     if (!result.success) {
+      const errorText = String(result.failedSessionErrors?.[sessionId] || result.error || 'WeLive export failed')
       failedSessionIds.push(sessionId)
-      failedSessionErrors[sessionId] = String(result.failedSessionErrors?.[sessionId] || result.error || 'WeLive export failed')
+      failedSessionErrors[sessionId] = errorText
+      if (getWeliveFallbackReason(result)) {
+        for (let remainingIndex = index + 1; remainingIndex < sessionIds.length; remainingIndex++) {
+          const remainingSessionId = sessionIds[remainingIndex]
+          failedSessionIds.push(remainingSessionId)
+          failedSessionErrors[remainingSessionId] = errorText
+        }
+        break
+      }
       continue
     }
     rawSessionOutputPaths[sessionId] = String(result.rawSessionOutputPaths?.[sessionId] || result.sessionOutputPaths?.[sessionId] || '')
@@ -490,14 +531,16 @@ async function runLegacyEngine() {
 
   wcdbService.setPaths(config.resourcesPath || '', config.userDataPath || '')
   wcdbService.setLogEnabled(config.logEnabled === true)
+  const electronRuntimePaths = resolveElectronRuntimePaths()
   exportService.setRuntimeConfig({
     dbPath: config.dbPath,
     decryptKey: config.decryptKey,
     myWxid: config.myWxid,
+    accountDir: config.accountDir,
     imageXorKey: config.imageXorKey,
     imageAesKey: config.imageAesKey,
-    resourcesPath: config.resourcesPath,
-    appPath: config.resourcesPath ? require('path').dirname(config.resourcesPath) : __dirname,
+    resourcesPath: electronRuntimePaths.resourcesPath,
+    appPath: electronRuntimePaths.appPath,
     isPackaged: config.isPackaged
   })
 
@@ -522,8 +565,9 @@ async function runLegacyEngine() {
       dbPath: config.dbPath,
       decryptKey: config.decryptKey,
       myWxid: config.myWxid,
-      resourcesPath: config.resourcesPath,
-      appPath: config.resourcesPath ? require('path').dirname(config.resourcesPath) : __dirname,
+      accountDir: config.accountDir,
+      resourcesPath: electronRuntimePaths.resourcesPath,
+      appPath: electronRuntimePaths.appPath,
       isPackaged: config.isPackaged
     })
     result = await contactExportService.exportContacts(
@@ -574,7 +618,8 @@ async function runLegacyEngine() {
 async function run() {
   if (shouldUseWeliveEngine()) {
     const result = await runWeliveEngine()
-    if (!isWeliveNativeCrashResult(result)) {
+    const fallbackReason = getWeliveFallbackReason(result)
+    if (!fallbackReason) {
       flushProgress()
       flushCreatedPaths()
       parentPort?.postMessage({
@@ -588,7 +633,7 @@ async function run() {
       current: 0,
       total: Array.isArray(config.sessionIds) ? config.sessionIds.length : 1,
       phase: 'preparing',
-      phaseLabel: 'WeLive 导出引擎异常退出，正在切换兼容导出引擎'
+      phaseLabel: getWeliveFallbackLabel(fallbackReason)
     })
     flushProgress()
     flushCreatedPaths()

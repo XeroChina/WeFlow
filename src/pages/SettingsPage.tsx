@@ -76,7 +76,7 @@ const aiTabs: Array<{ id: Extract<SettingsTab, 'aiCommon' | 'insight' | 'aiFootp
 const isMac = navigator.userAgent.toLowerCase().includes('mac')
 const isLinux = navigator.userAgent.toLowerCase().includes('linux')
 const isWindows = !isMac && !isLinux
-const MAC_KEY_FAQ_URL = 'https://github.com/hicccc77/WeFlow/blob/main/docs/MAC-KEY-FAQ.md'
+const MAC_KEY_FAQ_URL = 'https://github.com/XeroChina/WeFlow-Community/blob/main/docs/MAC-KEY-FAQ.md'
 const DEFAULT_GROUP_SUMMARY_SYSTEM_PROMPT = String(groupSummaryPrompt.defaultSystemPrompt || '').trim()
 
 const dbDirName = isMac ? '2.0b4.0.9 目录' : 'xwechat_files 目录'
@@ -5180,7 +5180,7 @@ JSON 输出格式：
         <div className="about-links">
           <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://weflow.top') }}>官网</a>
           <span>·</span>
-          <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://github.com/hicccc77/WeFlow') }}>GitHub 仓库</a>
+          <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://github.com/XeroChina/WeFlow-Community') }}>GitHub 仓库</a>
           <span>·</span>
           <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://chatlab.fun') }}>ChatLab</a>
           <span>·</span>

@@ -102,6 +102,7 @@ export class ExportContext {
           dbPath: config?.dbPath,
           decryptKey: config?.decryptKey,
           myWxid: config?.myWxid,
+          accountDir: config?.accountDir,
           resourcesPath: config?.resourcesPath,
           appPath: config?.appPath,
           isPackaged: config?.isPackaged
@@ -1345,7 +1346,7 @@ export class ExportContext {
         if (!decryptKey) return { success: false, error: '请先在设置页面配置解密密钥' }
 
         const cleanedWxid = this.cleanAccountDirName(wxid);
-        const accountDir = this.configService.getAccountDir(dbPath, wxid);
+        const accountDir = this.getConfiguredAccountDir();
         if (!accountDir) return { success: false, error: '无法找到账号目录' }
 
         const ok = await wcdbService.open(accountDir, decryptKey);

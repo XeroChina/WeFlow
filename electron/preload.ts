@@ -5,6 +5,17 @@ type CloseConfirmPayload = {
   restoreMethod?: 'tray' | 'dock'
 }
 
+// 主进程后台刷新公众号未读统计后广播的会话片段
+type SyntheticUnreadUpdate = {
+  username: string
+  unreadCount: number
+  summary: string
+  lastMsgType: number
+  sortTimestamp: number
+  lastTimestamp: number
+  messageCountHint?: number
+}
+
 // 暴露给渲染进程的 API
 contextBridge.exposeInMainWorld('electronAPI', {
   // 配置
@@ -210,6 +221,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chat: {
     connect: () => ipcRenderer.invoke('chat:connect'),
     getSessions: () => ipcRenderer.invoke('chat:getSessions'),
+    // 公众号未读统计在主进程后台刷新完成后广播，渲染进程据此更新会话列表
+    onSyntheticUnreadUpdated: (callback: (payload: SyntheticUnreadUpdate[]) => void) => {
+      const listener = (_: unknown, payload: SyntheticUnreadUpdate[]) => callback(payload)
+      ipcRenderer.on('chat:syntheticUnreadUpdated', listener)
+      return () => ipcRenderer.removeListener('chat:syntheticUnreadUpdated', listener)
+    },
     markAllSessionsRead: () => ipcRenderer.invoke('chat:markAllSessionsRead'),
     getAntiRevokeSessions: () => ipcRenderer.invoke('chat:getAntiRevokeSessions'),
     getSessionStatuses: (usernames: string[]) => ipcRenderer.invoke('chat:getSessionStatuses', usernames),

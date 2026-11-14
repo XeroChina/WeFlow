@@ -29,6 +29,7 @@ import type { TextExportFormat } from './types'
 import { getSelectionScopeFromRows, resolveScopeDisplayNames } from './utils/session'
 import { serializeExportDateRangeConfig } from '../../utils/exportDateRange'
 import { displayNameOrFallback, pickDisplayName } from '../../utils/displayName'
+import { useExportTaskStore } from '../../stores/exportTaskStore'
 import {
   emitSingleExportDialogStatus,
   onOpenSingleExport,
@@ -47,6 +48,8 @@ function ExportPage() {
   const [draftAutomationPayload, setDraftAutomationPayload] = useState<any>(null)
   const [pendingSingleExportRequest, setPendingSingleExportRequest] = useState<OpenSingleExportPayload | null>(null)
   const [metricsMapForSort, setMetricsMapForSort] = useState<Record<string, any>>({})
+  const pendingStoredSingleExport = useExportTaskStore(state => state.pendingSingleExport)
+  const consumeStoredSingleExport = useExportTaskStore(state => state.consumeSingleExport)
 
   const { 
     isLoaded: isConfigLoaded,
@@ -278,6 +281,13 @@ function ExportPage() {
   useEffect(() => {
     return onOpenSingleExport(handleOpenSingleExportRequest)
   }, [handleOpenSingleExportRequest])
+
+  useEffect(() => {
+    if (!pendingStoredSingleExport) return
+    const request = consumeStoredSingleExport()
+    if (!request) return
+    handleOpenSingleExportRequest(request)
+  }, [consumeStoredSingleExport, handleOpenSingleExportRequest, pendingStoredSingleExport])
 
   useEffect(() => {
     if (!isConfigLoaded || !pendingSingleExportRequest) return

@@ -565,6 +565,17 @@ export interface ElectronAPI {
   chat: {
     connect: () => Promise<{ success: boolean; error?: string }>
     getSessions: () => Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }>
+    onSyntheticUnreadUpdated: (
+      callback: (payload: Array<{
+        username: string
+        unreadCount: number
+        summary: string
+        lastMsgType: number
+        sortTimestamp: number
+        lastTimestamp: number
+        messageCountHint?: number
+      }>) => void
+    ) => () => void
     markAllSessionsRead: () => Promise<{ success: boolean; error?: string }>
     getAntiRevokeSessions: () => Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }>
     getSessionStatuses: (usernames: string[]) => Promise<{

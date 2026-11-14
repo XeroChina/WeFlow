@@ -10,18 +10,30 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hicccc77/WeFlow/stargazers"><img src="https://img.shields.io/github/stars/hicccc77/WeFlow?style=flat&label=Stars&labelColor=2A3B4C&color=60A5FA" alt="Stargazers"></a>
-  <a href="https://github.com/hicccc77/WeFlow/network/members"><img src="https://img.shields.io/github/forks/hicccc77/WeFlow?style=flat&label=Forks&labelColor=2A3B4C&color=60A5FA" alt="Forks"></a>
-  <a href="https://github.com/hicccc77/WeFlow/releases"><img src="https://img.shields.io/github/downloads/hicccc77/WeFlow/total?style=flat&label=Downloads&labelColor=2A3B4C&color=60A5FA" alt="Downloads"></a>
+  <a href="https://github.com/XeroChina/WeFlow-Community/stargazers"><img src="https://img.shields.io/github/stars/XeroChina/WeFlow-Community?style=flat&label=Stars&labelColor=2A3B4C&color=60A5FA" alt="Stargazers"></a>
+  <a href="https://github.com/XeroChina/WeFlow-Community/network/members"><img src="https://img.shields.io/github/forks/XeroChina/WeFlow-Community?style=flat&label=Forks&labelColor=2A3B4C&color=60A5FA" alt="Forks"></a>
+  <a href="https://github.com/XeroChina/WeFlow-Community/releases"><img src="https://img.shields.io/github/downloads/XeroChina/WeFlow-Community/total?style=flat&label=Downloads&labelColor=2A3B4C&color=60A5FA" alt="Downloads"></a>
   <br><br>
   <a href="https://t.me/weflow_cc"><img src="https://img.shields.io/badge/Telegram-频道-60A5FA?style=flat&logo=telegram&logoColor=white&labelColor=2A3B4C&color=60A5FA" alt="Telegram Channel" style="height: 24px; vertical-align: middle;"></a>
-  <a href="https://star-history.com/#hicccc77/WeFlow"><img src="https://api.star-history.com/badge?repo=hicccc77/WeFlow&theme=dark" alt="Star History Rank" style="height: 30px; vertical-align: middle;"></a>
+  <a href="https://star-history.com/#XeroChina/WeFlow-Community"><img src="https://api.star-history.com/badge?repo=XeroChina/WeFlow-Community&theme=dark" alt="Star History Rank" style="height: 30px; vertical-align: middle;"></a>
 </p>
 
 > [!TIP]
 > 仅支持微信 **4.0 及以上**版本
 >
 > 如果导出聊天记录后，想深入分析聊天内容可以试试 [ChatLab](https://chatlab.fun/)
+
+## 关于本仓库
+
+本仓库是 WeFlow 的**社区维护版本**，基于 WeFlow 5.0.0 源码，合并了社区热修复补丁并做了性能优化。
+
+相对 5.0.0 的主要变更：
+
+- **修复对话列表空白**：Chromium `Local State` 主密钥轮换导致 `safe:` 密文集体失效，现已恢复本地密钥的正常解密
+- **修复 `getSessions` 卡顿**：公众号未读统计改为后台增量刷新 + 快照缓存，公众号联系人改为定向 SQL 查询并缓存，`getSessions` 从 8–92 秒降到 100 毫秒级
+- **原生库更新**：内置社区维护的 `wcdb_api.dll`，兼容新版微信数据库
+
+上游项目：https://github.com/hicccc77/WeFlow
 
 
 ## 主要功能
@@ -44,7 +56,7 @@
 
 ## 快速开始
 
-若你只想使用成品版本，可前往 [Releases](https://github.com/hicccc77/WeFlow/releases) 下载并安装。
+若你只想使用成品版本，可前往 [Releases](https://github.com/XeroChina/WeFlow-Community/releases) 下载并安装。
 
 ArchLinux 用户可以选择 `yay -S weflow` 快速安装
 
@@ -81,8 +93,8 @@ WeFlow 提供本地 HTTP API 服务，支持通过接口查询消息数据，可
 
 ```bash
 # 1. 克隆项目到本地
-git clone https://github.com/hicccc77/WeFlow.git
-cd WeFlow
+git clone https://github.com/XeroChina/WeFlow-Community.git
+cd WeFlow-Community
 
 # 2. 安装项目依赖
 npm install

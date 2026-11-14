@@ -418,7 +418,7 @@ const resetUpdaterProviderCache = () => {
 }
 
 const getUpdaterFeedUrlByTrack = (track: 'stable' | 'preview' | 'dev'): string => {
-  const repoBase = 'https://github.com/hicccc77/WeFlow/releases'
+  const repoBase = 'https://github.com/XeroChina/WeFlow-Community/releases'
   if (track === 'stable') return `${repoBase}/latest/download`
   if (track === 'preview') return `${repoBase}/download/nightly-preview`
   return `${repoBase}/download/nightly-dev`
@@ -3640,6 +3640,8 @@ function registerIpcHandlers() {
             imageXorKey: imageKeys.xorKey,
             imageAesKey: imageKeys.aesKey,
             resourcesPath,
+            electronResourcesPath: process.resourcesPath,
+            appPath: app.getAppPath(),
             userDataPath,
             cachePath,
             emojiCacheDir,
@@ -3780,6 +3782,8 @@ function registerIpcHandlers() {
             imageXorKey: imageKeys.xorKey,
             imageAesKey: imageKeys.aesKey,
             resourcesPath: app.isPackaged ? join(process.resourcesPath, 'resources') : join(app.getAppPath(), 'resources'),
+            electronResourcesPath: process.resourcesPath,
+            appPath: app.getAppPath(),
             userDataPath: app.getPath('userData'),
             cachePath: singleCachePath,
             emojiCacheDir: singleEmojiCacheDir,
@@ -3850,6 +3854,8 @@ function registerIpcHandlers() {
             decryptKey: String(cfg.get('decryptKey') || '').trim(),
             myWxid: String(cfg.getMyWxidCleaned() || '').trim(),
             resourcesPath: app.isPackaged ? join(process.resourcesPath, 'resources') : join(app.getAppPath(), 'resources'),
+            electronResourcesPath: process.resourcesPath,
+            appPath: app.getAppPath(),
             userDataPath: app.getPath('userData'),
             logEnabled: cfg.get('logEnabled'),
             isPackaged: app.isPackaged
