@@ -1,16 +1,15 @@
 name: runner-probe
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - "main"
+
+permissions:
+  contents: read
 
 jobs:
   probe:
-    runs-on: ${{ matrix.label }}
-    strategy:
-      fail-fast: false
-      matrix:
-        label: [macos-latest, macos-15, macos-13, macos-14, macos-15-intel]
+    runs-on: macos-13
     steps:
       - name: ok
-        run: echo "runner ok: $RUNNER_NAME / $RUNNER_ARCH"
+        run: echo "runner ok $RUNNER_NAME"
