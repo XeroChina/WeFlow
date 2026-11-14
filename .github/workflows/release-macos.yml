@@ -1,0 +1,98 @@
+name: Release macOS arm64 (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach assets to (e.g. v5.2.0)'
+        required: true
+        default: 'v5.2.0'
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/
+
+jobs:
+  release-mac-arm64:
+    runs-on: macos-15
+
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: "npm"
+      - name: Install Dependencies
+        run: npm install --ignore-scripts
+
+      - name: Ensure mac key helpers are executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            resources/key/macos/universal/xkey_helper \
+            resources/key/macos/universal/image_scan_helper \
+            resources/key/macos/universal/xkey_helper_macos \
+            resources/key/macos/universal/libwx_key.dylib
+          do
+            if [ -f "$file" ]; then
+              chmod +x "$file"
+              ls -l "$file"
+            fi
+          done
+
+      - name: Sync version with tag
+        shell: bash
+        run: |
+          VERSION=${{ inputs.tag }}
+          VERSION=${VERSION#v}
+          echo "Syncing package.json version to $VERSION"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+
+      - name: Build Frontend & Type Check
+        shell: bash
+        run: |
+          npx tsc
+          npx vite build
+
+      - name: Package and Publish macOS arm64 (unsigned DMG + ZIP)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ELECTRON_BUILDER_BINARIES_MIRROR="https://github.com/electron-userland/electron-builder-binaries/releases/download/"
+          echo "Using ELECTRON_BUILDER_BINARIES_MIRROR=$ELECTRON_BUILDER_BINARIES_MIRROR"
+          npx electron-builder --mac dmg zip --arm64 --publish always '--config.npmRebuild=false' '--config.publish.owner=${{ github.repository_owner }}' '--config.publish.repo=${{ github.event.repository.name }}'
+
+      - name: Inject minimumVersion into latest yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .github/scripts/release-utils.sh
+          TAG=${{ inputs.tag }}
+          REPO=${{ github.repository }}
+          MINIMUM_VERSION="4.1.7"
+          wait_for_release_id "$REPO" "$TAG" 12 2 >/dev/null
+          for YML_FILE in latest-mac.yml latest-arm64-mac.yml; do
+            if ! retry_cmd 5 3 gh release download "$TAG" --repo "$REPO" --pattern "$YML_FILE" --output "/tmp/$YML_FILE"; then
+              echo "Skip $YML_FILE because download failed after retries."
+              continue
+            fi
+            if ! grep -q 'minimumVersion' "/tmp/$YML_FILE"; then
+              echo "minimumVersion: $MINIMUM_VERSION" >> "/tmp/$YML_FILE"
+            fi
+            retry_cmd 5 3 gh release upload "$TAG" --repo "$REPO" "/tmp/$YML_FILE" --clobber
+          done
